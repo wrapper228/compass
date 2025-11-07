@@ -30,6 +30,7 @@ cd compass
 - Windows (PowerShell):
 ```
 python -m venv .venv
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
 .venv\Scripts\Activate.ps1
 ```
 - macOS/Linux:
@@ -79,6 +80,8 @@ GET http://localhost:8000/api/health
 Должно вернуть: `{ "ok": true }`
 
 ## Как пользоваться (примеры)
+- Веб‑интерфейс чата: открой в браузере http://localhost:8000/chat
+
 - HTTP чат (пока заглушка ответа):
 ```
 curl -s -X POST http://localhost:8000/api/chat/generate \
