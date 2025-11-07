@@ -1,5 +1,6 @@
 from typing import Optional
 
+import anyio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.schemas.chat import (

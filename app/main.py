@@ -12,6 +12,7 @@ from app.db.session import engine
 from app.db.session import SessionLocal
 from app.services.memory import update_session_summary
 from app.services.preferences import extract_preferences
+from app.db import models
 
 
 def create_app() -> FastAPI:
@@ -38,7 +39,7 @@ def create_app() -> FastAPI:
         def consolidate_job():
             db = SessionLocal()
             try:
-                sessions = db.query(app.db.models.SessionModel).all()
+                sessions = db.query(models.SessionModel).all()
                 for s in sessions:
                     try:
                         update_session_summary(db, s)

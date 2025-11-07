@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import List
 
 from sqlalchemy.orm import Session
+import anyio
 
 from app.db import models
 from app.services.llm_gateway import chat_completion
