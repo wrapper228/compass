@@ -4,41 +4,62 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Compass Chat</title>
-    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
     <style>
+      :root{color-scheme:light dark}
       body{font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial, sans-serif; max-width: 840px; margin: 24px auto; padding: 0 12px}
-      .msg{padding:10px 12px; border-radius:10px; margin:8px 0}
-      .user{background:#eef;}
-      .assistant{background:#efe;}
-      .row{display:flex; gap:8px}
-      textarea{width:100%; height:90px}
-      button{padding:8px 12px}
+      h1{margin:0 0 16px}
+      #chat{border:1px solid #ddd; border-radius:10px; padding:12px; height:60vh; overflow:auto; background:#fafafa}
+      .row{display:flex; gap:8px; margin-top:12px}
+      input[type=text]{flex:1; padding:10px 12px; border-radius:10px; border:1px solid #ccc}
+      button{padding:10px 14px; border-radius:10px; border:1px solid #ccc; cursor:pointer}
+      .bubble{max-width:80%; padding:10px 12px; border-radius:14px; margin:8px 0; white-space:pre-wrap}
+      .user{background:#e8f0ff; margin-left:auto}
+      .assistant{background:#e9ffe8; margin-right:auto}
       .meta{color:#666; font-size:12px}
     </style>
   </head>
   <body>
     <h1>Compass Chat</h1>
-    <div id="log"></div>
-    <form id="f" hx-post="/api/chat/generate" hx-trigger="submit" hx-target="#resp" hx-swap="innerHTML">
-      <div class="row">
-        <textarea name="payload" placeholder='{"messages":[{"role":"user","content":"Привет"}]}'></textarea>
-        <button type="submit">Отправить</button>
-      </div>
-      <div class="meta">Отправляется JSON тела запроса для /api/chat/generate</div>
+    <div id="chat"></div>
+    <form id="send" class="row">
+      <input id="text" type="text" placeholder="Напишите сообщение..." autocomplete="off" />
+      <button type="submit">Отправить</button>
     </form>
-    <pre id="resp"></pre>
+    <div class="meta">Ответ стримится через WebSocket.</div>
     <script>
-      const form = document.getElementById('f');
-      form.addEventListener('htmx:configRequest', (e) => {
-        try {
-          const data = JSON.parse(form.querySelector('textarea').value);
-          e.detail.headers['Content-Type'] = 'application/json';
-          e.detail.parameters = {};
-          e.detail.fetchOpts.body = JSON.stringify(data);
-        } catch (err) {
-          alert('Некорректный JSON');
-          e.preventDefault();
-        }
+      const chatEl = document.getElementById('chat');
+      const formEl = document.getElementById('send');
+      const inputEl = document.getElementById('text');
+
+      function appendBubble(text, who){
+        const div = document.createElement('div');
+        div.className = 'bubble ' + who;
+        div.textContent = text;
+        chatEl.appendChild(div);
+        chatEl.scrollTop = chatEl.scrollHeight;
+        return div;
+      }
+
+      function wsUrl(path){
+        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        return proto + '://' + location.host + path;
+      }
+
+      formEl.addEventListener('submit', (e)=>{
+        e.preventDefault();
+        const text = inputEl.value.trim();
+        if(!text) return;
+        inputEl.value = '';
+        appendBubble(text, 'user');
+        const ws = new WebSocket(wsUrl('/api/ws/chat'));
+        const assistant = appendBubble('', 'assistant');
+        ws.onopen = ()=> ws.send(text);
+        ws.onmessage = (ev)=>{
+          if(ev.data === '[DONE]'){ ws.close(); return; }
+          assistant.textContent += ev.data;
+          chatEl.scrollTop = chatEl.scrollHeight;
+        };
+        ws.onerror = ()=>{ assistant.textContent = '(ошибка соединения)'; };
       });
     </script>
   </body>
