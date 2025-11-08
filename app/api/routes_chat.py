@@ -8,7 +8,7 @@ from app.schemas.chat import (
     ChatGenerateResponse,
     ChatMessage,
 )
-from app.services.llm_gateway import stream_reply_stub, chat_completion
+from app.services.llm_gateway import stream_reply_stub, chat_completion, tokenize_for_stream
 from app.services.rag import retrieve_for_text
 from app.services.dialog import compose_messages
 from app.services.analysis import classify_emotion
@@ -116,11 +116,40 @@ def chat_generate(payload: ChatGenerateRequest, db: Session = Depends(get_db)) -
 async def chat_ws(ws: WebSocket):
     await ws.accept()
     try:
-        # Ждём простое текстовое сообщение пользователя
         data = await ws.receive_text()
-        # Отправляем токены по мере готовности (стуб)
-        async for token in stream_reply_stub(f"Принято: {data}"):
-            await ws.send_text(token)
+        # Попробуем RAG + LLM, с безопасным фолбэком на заглушку
+        try:
+            retrieved = await retrieve_for_text(data, top_k=6)
+        except Exception:
+            retrieved = []
+
+        # Добавим краткий контекст памяти
+        try:
+            from app.db.session import SessionLocal
+            from app.services.memory import get_brief_memory_context
+
+            db = SessionLocal()
+            try:
+                mem_texts = get_brief_memory_context(db)
+            finally:
+                db.close()
+            for t in mem_texts:
+                retrieved.append({"text": t})
+        except Exception:
+            pass
+
+        msgs = compose_messages(data, retrieved)
+        reply = await chat_completion(msgs, True)
+        if not reply:
+            # Фолбэк: поток заглушки
+            async for token in stream_reply_stub(f"Принято: {data}"):
+                await ws.send_text(token)
+            await ws.send_text("[DONE]")
+            return
+
+        # Стримим готовый текст порциями
+        for tok in tokenize_for_stream(reply):
+            await ws.send_text(tok)
         await ws.send_text("[DONE]")
     except WebSocketDisconnect:
         return
