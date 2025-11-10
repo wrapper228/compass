@@ -1,20 +1,14 @@
 from __future__ import annotations
 
-from typing import List, Dict, Optional
+from typing import Dict, List
 
-from app.services.embeddings import get_embedding, EmbeddingsUnavailable
-from app.services.retrieval import get_qdrant, search
+from app.services.retrieval import retrieve
 
 
 async def retrieve_for_text(text: str, top_k: int = 6) -> List[Dict]:
     try:
-        vec = await get_embedding(text)
-    except EmbeddingsUnavailable:
+        return await retrieve(text, top_k)
+    except Exception:
         return []
-
-    client = get_qdrant()
-    if client is None:
-        return []
-    return search(client, vec, top_k=top_k)
 
 

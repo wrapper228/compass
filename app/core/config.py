@@ -24,6 +24,27 @@ class Settings(BaseSettings):
     qdrant_api_key: str | None = None
     qdrant_collection: str = "chunks"
 
+    # Retrieval (hybrid)
+    retrieval_enabled: bool = True
+    indices_path: str = "data/indices"
+    dense_model_name: str = "BAAI/bge-small-en-v1.5"
+    bm25_min_df: int = 1
+    dense_index_top_k: int = 50
+    bm25_top_k: int = 50
+    rerank_model_name: str = "BAAI/bge-reranker-large"
+    rerank_top_k: int = 40
+    mmr_lambda: float = 0.6
+    max_context_tokens: int = 1800
+    context_clusters: int = 4
+    hyde_prompt: str = (
+        "Ты создаёшь краткий конспект или гипотетический документ, который мог бы содержать"
+        " ответ на запрос пользователя. Пиши по делу, 2-3 абзаца, без воды."
+    )
+    self_check_threshold: float = 0.25
+    self_check_iterations: int = 2
+    chunk_size_tokens: int = 800
+    chunk_overlap_tokens: int = 120
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

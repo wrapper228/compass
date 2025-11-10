@@ -1,3 +1,4 @@
+import json
 import uuid
 from pathlib import Path
 
@@ -37,9 +38,14 @@ async def upload_files(zip_file: UploadFile = File(...), background: BackgroundT
 def ingest_status(job_id: str) -> dict:
     zip_path = UPLOAD_DIR / f"{job_id}.zip"
     workspace = Path("data/tmp") / job_id
-    chunks_file = workspace / "chunks.json"
-    if chunks_file.exists():
-        return {"status": "done", "job_id": job_id}
+    result_path = workspace / "ingest_result.json"
+    if result_path.exists():
+        try:
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {"job_id": job_id}
+        payload.update({"status": "done"})
+        return payload
     exists = zip_path.exists()
     return {"status": "queued" if exists else "not_found", "job_id": job_id}
 
