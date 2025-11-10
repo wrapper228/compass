@@ -73,7 +73,7 @@ def process_zip(job_id: str, zip_bytes: bytes, workspace: Path) -> dict:
             # Заменяем предыдущие версии документа по пути
             removed_chunk_ids = _delete_existing_document(session, doc.path)
             if removed_chunk_ids and settings.retrieval_enabled:
-                manager.remove_chunks(removed_chunk_ids, source=f"job:{job_id}")
+                manager.remove_chunks(removed_chunk_ids, source=f"job:{job_id}", session=session)
 
             doc_row = models.KnowledgeDocument(
                 job_id=job_id,
@@ -118,7 +118,7 @@ def process_zip(job_id: str, zip_bytes: bytes, workspace: Path) -> dict:
 
         indexed = 0
         if indexed_inputs and settings.retrieval_enabled:
-            indexed = manager.index_chunks(indexed_inputs, source=f"job:{job_id}")
+            indexed = manager.index_chunks(indexed_inputs, source=f"job:{job_id}", session=session)
 
         session.commit()
         logger.info(

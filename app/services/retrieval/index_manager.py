@@ -17,6 +17,7 @@ import structlog
 from app.core.config import Settings, get_settings
 from app.db import models
 from app.db.session import SessionLocal
+from sqlalchemy.orm import Session
 
 
 @dataclass
@@ -54,7 +55,12 @@ class HybridIndexManager:
         self._load_state()
 
     # ------------------------------------------------------------------ public API
-    def index_chunks(self, chunks: Iterable[ChunkIndexInput], source: Optional[str] = None) -> int:
+    def index_chunks(
+        self,
+        chunks: Iterable[ChunkIndexInput],
+        source: Optional[str] = None,
+        session: Optional[Session] = None,
+    ) -> int:
         if not self.settings.retrieval_enabled:
             return 0
 
@@ -94,7 +100,7 @@ class HybridIndexManager:
         self._persist_metadata()
         self._persist_bm25_tokens()
         self._rebuild_bm25_model()
-        self._record_version(source or "update")
+        self._record_version(source or "update", session=session)
         self._logger.info(
             "indices.upsert",
             added=len(chunk_list),
@@ -104,7 +110,12 @@ class HybridIndexManager:
 
         return len(chunk_list)
 
-    def remove_chunks(self, chunk_ids: Iterable[int], source: Optional[str] = None) -> int:
+    def remove_chunks(
+        self,
+        chunk_ids: Iterable[int],
+        source: Optional[str] = None,
+        session: Optional[Session] = None,
+    ) -> int:
         ids = [int(cid) for cid in chunk_ids if cid in self._metadata]
         if not ids:
             return 0
@@ -119,7 +130,7 @@ class HybridIndexManager:
         self._persist_metadata()
         self._persist_bm25_tokens()
         self._rebuild_bm25_model()
-        self._record_version(source or "delete")
+        self._record_version(source or "delete", session=session)
         self._logger.info(
             "indices.delete",
             removed=len(ids),
@@ -344,8 +355,9 @@ class HybridIndexManager:
     def _tokenize(self, text: str) -> List[str]:
         return [t.lower() for t in self._token_pattern.findall(text)]
 
-    def _record_version(self, note: str) -> None:
-        session = SessionLocal()
+    def _record_version(self, note: str, session: Optional[Session] = None) -> None:
+        own_session = session is None
+        session = session or SessionLocal()
         try:
             version = datetime.utcnow().isoformat()
             for name in ("dense", "bm25"):
@@ -361,12 +373,17 @@ class HybridIndexManager:
                     row.version = version
                     row.source_hash = note
                     row.notes = note
-            session.commit()
+            if own_session:
+                session.commit()
+            else:
+                session.flush()
         except Exception:
-            session.rollback()
+            if own_session:
+                session.rollback()
             raise
         finally:
-            session.close()
+            if own_session:
+                session.close()
 
     def _reset_state(self) -> None:
         self._metadata = {}
