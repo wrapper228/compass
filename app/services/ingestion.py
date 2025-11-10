@@ -1,16 +1,33 @@
+import csv as _csv
+import hashlib
 import io
 import json
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import Iterable, List
+
 from bs4 import BeautifulSoup
+from datasketch import MinHash, MinHashLSH
 from docx import Document as DocxDocument
 from pypdf import PdfReader
-from datasketch import MinHash, MinHashLSH
-import json as _json
-import csv as _csv
 
-import anyio
+from app.core.config import get_settings
+from app.services.embeddings import embed_batch_sync
+from app.services.indexes import ChunkRecord, DenseVector, IndexRepository
+from app.services.tokenization import get_tokenizer
+
+
+@dataclass
+class RawChunk:
+    path: str
+    idx: int
+    text: str
+    start_line: int
+    end_line: int
+    start_offset: int
+    end_offset: int
+    token_count: int
 
 
 def process_zip(job_id: str, zip_bytes: bytes, workspace: Path) -> dict:
@@ -23,161 +40,195 @@ def process_zip(job_id: str, zip_bytes: bytes, workspace: Path) -> dict:
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
         z.extractall(raw_dir)
 
-    texts: List[dict] = []
+    raw_chunks: List[RawChunk] = []
     for p in raw_dir.rglob("*"):
         if not p.is_file():
             continue
-        ext = p.suffix.lower()
-        if ext in {".txt", ".md"}:
-            rel = p.relative_to(raw_dir).as_posix()
-            try:
-                content = p.read_text(encoding="utf-8", errors="ignore")
-            except Exception:
-                continue
-            for idx, chunk in enumerate(chunk_paragraphs(content)):
-                texts.append({
-                    "path": rel,
-                    "idx": idx,
-                    "text": chunk,
-                })
-        elif ext in {".json"}:
-            rel = p.relative_to(raw_dir).as_posix()
-            try:
-                data = _json.loads(p.read_text(encoding="utf-8", errors="ignore"))
-                content = _json.dumps(data, ensure_ascii=False, indent=2)
-            except Exception:
-                continue
-            for idx, chunk in enumerate(chunk_paragraphs(content)):
-                texts.append({"path": rel, "idx": idx, "text": chunk})
-        elif ext in {".csv"}:
-            rel = p.relative_to(raw_dir).as_posix()
-            try:
-                rows = []
-                with p.open("r", encoding="utf-8", errors="ignore") as f:
-                    reader = _csv.reader(f)
-                    for row in reader:
-                        rows.append(", ".join(row))
-                content = "\n".join(rows)
-            except Exception:
-                continue
-            for idx, chunk in enumerate(chunk_paragraphs(content)):
-                texts.append({"path": rel, "idx": idx, "text": chunk})
-        elif ext in {".html", ".htm"}:
-            rel = p.relative_to(raw_dir).as_posix()
-            try:
-                html = p.read_text(encoding="utf-8", errors="ignore")
-                soup = BeautifulSoup(html, "lxml")
-                content = soup.get_text("\n", strip=True)
-            except Exception:
-                continue
-            for idx, chunk in enumerate(chunk_paragraphs(content)):
-                texts.append({"path": rel, "idx": idx, "text": chunk})
-        elif ext in {".docx"}:
-            rel = p.relative_to(raw_dir).as_posix()
-            try:
-                doc = DocxDocument(p)
-                content = "\n".join([para.text for para in doc.paragraphs])
-            except Exception:
-                continue
-            for idx, chunk in enumerate(chunk_paragraphs(content)):
-                texts.append({"path": rel, "idx": idx, "text": chunk})
-        elif ext in {".pdf"}:
-            rel = p.relative_to(raw_dir).as_posix()
-            try:
-                reader = PdfReader(str(p))
-                pages = []
-                for page in reader.pages:
-                    pages.append(page.extract_text() or "")
-                content = "\n".join(pages)
-            except Exception:
-                continue
-            for idx, chunk in enumerate(chunk_paragraphs(content)):
-                texts.append({"path": rel, "idx": idx, "text": chunk})
+        rel = p.relative_to(raw_dir).as_posix()
+        try:
+            content = _extract_text(p)
+        except Exception:
+            continue
+        for idx, chunk in enumerate(chunk_text(content)):
+            raw_chunks.append(
+                RawChunk(
+                    path=rel,
+                    idx=idx,
+                    text=chunk["text"],
+                    start_line=chunk["start_line"],
+                    end_line=chunk["end_line"],
+                    start_offset=chunk["start_offset"],
+                    end_offset=chunk["end_offset"],
+                    token_count=chunk["token_count"],
+                )
+            )
 
-    # Дедупликация MinHash по чанкам
-    texts = deduplicate_chunks(texts)
+    deduped = deduplicate_chunks(raw_chunks)
+    chunks_payload = [raw_chunk_to_payload(job_id, ch) for ch in deduped]
+    chunks_path.write_text(json.dumps(chunks_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    chunks_path.write_text(json.dumps(texts, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Update local indexes
+    settings = get_settings()
+    index_repo = IndexRepository(Path(settings.retrieval_index_path))
+    existing = [rec for rec in index_repo.list_chunks() if rec.job_id != job_id]
+    chunk_records = [payload_to_record(item) for item in chunks_payload]
+    valid_ids = [rec.chunk_id for rec in existing] + [rec.chunk_id for rec in chunk_records]
+    index_repo.prune_chunks(valid_ids)
+    index_repo.dense_index.delete_missing(valid_ids)
+    index_repo.upsert_chunks(existing + chunk_records)
+    embeddings = embed_batch_sync([rec.text for rec in chunk_records])
+    index_repo.ensure_dense_vectors(
+        DenseVector(chunk_id=rec.chunk_id, vector=embeddings[i])
+        for i, rec in enumerate(chunk_records)
+    )
+    index_repo.ensure_sparse_index()
 
-    # Пытаемся индексировать в векторку (если настроено)
-    try:
-        from app.services.retrieval import get_qdrant, ensure_collection, upsert_points
-        from app.services.embeddings import get_embedding
-
-        client = get_qdrant()
-        if client is None:
-            return {"job_id": job_id, "chunks": len(texts), "indexed": 0}
-
-        # Получим размер вектора из первого эмбеддинга
-        first_vec = anyio.run(get_embedding, texts[0]["text"]) if texts else []
-        if not first_vec:
-            return {"job_id": job_id, "chunks": len(texts), "indexed": 0}
-        ensure_collection(client, vector_size=len(first_vec))
-
-        vectors = []
-        payloads = []
-        for i, t in enumerate(texts):
-            vec = anyio.run(get_embedding, t["text"])  # sync wrapper
-            vectors.append(vec)
-            payloads.append({
-                "id": f"{job_id}-{i}",
-                "job_id": job_id,
-                "path": t["path"],
-                "idx": t["idx"],
-                "text": t["text"],
-            })
-        upsert_points(client, vectors, payloads)
-        return {"job_id": job_id, "chunks": len(texts), "indexed": len(vectors)}
-    except Exception:
-        # Индексация необязательна для работы MVP
-        return {"job_id": job_id, "chunks": len(texts), "indexed": 0}
+    return {
+        "job_id": job_id,
+        "chunks": len(chunk_records),
+        "indexed_dense": len(chunk_records),
+        "indexed_sparse": len(chunk_records),
+    }
 
 
-def chunk_paragraphs(text: str, max_len: int = 1200) -> List[str]:
-    paras = [p.strip() for p in text.split("\n\n") if p.strip()]
-    chunks: List[str] = []
-    for para in paras:
-        if len(para) <= max_len:
-            chunks.append(para)
-        else:
-            # Грубая разбивка длинных параграфов
+def _extract_text(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext in {".txt", ".md"}:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    if ext in {".json"}:
+        data = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+        return json.dumps(data, ensure_ascii=False, indent=2)
+    if ext in {".csv"}:
+        rows = []
+        with path.open("r", encoding="utf-8", errors="ignore") as f:
+            reader = _csv.reader(f)
+            for row in reader:
+                rows.append(", ".join(row))
+        return "\n".join(rows)
+    if ext in {".html", ".htm"}:
+        html = path.read_text(encoding="utf-8", errors="ignore")
+        soup = BeautifulSoup(html, "lxml")
+        return soup.get_text("\n", strip=True)
+    if ext in {".docx"}:
+        doc = DocxDocument(path)
+        return "\n".join([para.text for para in doc.paragraphs])
+    if ext in {".pdf"}:
+        reader = PdfReader(str(path))
+        pages = [page.extract_text() or "" for page in reader.pages]
+        return "\n".join(pages)
+    return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def chunk_text(text: str, min_tokens: int = 500, max_tokens: int = 1000) -> Iterable[dict]:
+    tokenizer = get_tokenizer()
+    lines = text.splitlines()
+    chunks: List[dict] = []
+    buf: List[str] = []
+    buf_tokens = 0
+    start_line = 1
+    start_offset = 0
+    current_offset = 0
+    for idx, line in enumerate(lines):
+        line_tokens = len(tokenizer.encode(line))
+        line_with_newline = line + "\n"
+        projected = buf_tokens + line_tokens
+        if buf and projected > max_tokens:
+            chunk_text = "\n".join(buf)
+            end_line = start_line + len(buf) - 1
+            chunks.append(
+                {
+                    "text": chunk_text,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "start_offset": start_offset,
+                    "end_offset": current_offset,
+                    "token_count": max(buf_tokens, 1),
+                }
+            )
             buf = []
-            cur_len = 0
-            for sent in para.split(". "):
-                if cur_len + len(sent) + 2 > max_len:
-                    if buf:
-                        chunks.append(". ".join(buf).strip())
-                        buf = []
-                        cur_len = 0
-                buf.append(sent)
-                cur_len += len(sent) + 2
-            if buf:
-                chunks.append(". ".join(buf).strip())
+            buf_tokens = 0
+            start_line = idx + 1
+            start_offset = current_offset
+        if not buf:
+            start_line = idx + 1
+            start_offset = current_offset
+        buf.append(line)
+        buf_tokens += line_tokens
+        current_offset += len(line_with_newline)
+        if buf_tokens >= min_tokens:
+            chunk_text = "\n".join(buf)
+            end_line = start_line + len(buf) - 1
+            chunks.append(
+                {
+                    "text": chunk_text,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "start_offset": start_offset,
+                    "end_offset": current_offset,
+                    "token_count": max(buf_tokens, 1),
+                }
+            )
+            buf = []
+            buf_tokens = 0
+            start_line = idx + 2
+            start_offset = current_offset
+    if buf:
+        chunk_text = "\n".join(buf)
+        end_line = start_line + len(buf) - 1
+        chunks.append(
+            {
+                "text": chunk_text,
+                "start_line": start_line,
+                "end_line": end_line,
+                "start_offset": start_offset,
+                "end_offset": current_offset,
+                "token_count": max(buf_tokens, 1),
+            }
+        )
     return chunks
+
+
+def raw_chunk_to_payload(job_id: str, chunk: RawChunk) -> dict:
+    version = hashlib.sha1(f"{chunk.path}:{chunk.text}".encode("utf-8")).hexdigest()
+    chunk_id = f"{job_id}:{version[:16]}:{chunk.idx}"
+    return {
+        "chunk_id": chunk_id,
+        "job_id": job_id,
+        "path": chunk.path,
+        "idx": chunk.idx,
+        "text": chunk.text,
+        "start_line": chunk.start_line,
+        "end_line": chunk.end_line,
+        "start_offset": chunk.start_offset,
+        "end_offset": chunk.end_offset,
+        "token_count": chunk.token_count,
+        "version": version,
+    }
+
+
+def payload_to_record(payload: dict) -> ChunkRecord:
+    return ChunkRecord(**payload)
 
 
 def _shingles(text: str, k: int = 5) -> List[str]:
     tokens = text.split()
     if len(tokens) <= k:
         return [" ".join(tokens)]
-    return [" ".join(tokens[i:i+k]) for i in range(0, len(tokens) - k + 1)]
+    return [" ".join(tokens[i : i + k]) for i in range(0, len(tokens) - k + 1)]
 
 
-def deduplicate_chunks(items: List[dict], threshold: float = 0.85) -> List[dict]:
+def deduplicate_chunks(items: List[RawChunk], threshold: float = 0.85) -> List[RawChunk]:
     if not items:
         return items
-    # LSH по MinHash для быстрых кандидатов
     lsh = MinHashLSH(threshold=threshold, num_perm=64)
-    kept: List[dict] = []
+    kept: List[RawChunk] = []
     idx = 0
     for it in items:
         mh = MinHash(num_perm=64)
-        for sh in _shingles(it["text"], 5):
+        for sh in _shingles(it.text, 5):
             mh.update(sh.encode("utf-8", errors="ignore"))
-        # Найти похожие
         cands = lsh.query(mh)
         if cands:
-            # Пропускаем как дубликат
             continue
         lsh.insert(str(idx), mh)
         kept.append(it)

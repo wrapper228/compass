@@ -7,6 +7,8 @@ def test_memory_search_empty():
     client = TestClient(app)
     r = client.get("/api/memory/search", params={"q": "hello", "top_k": 2})
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    data = r.json()
+    assert isinstance(data, dict)
+    assert "hits" in data
 
 

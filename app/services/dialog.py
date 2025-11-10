@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 
 from app.core.config import get_settings
 
@@ -29,14 +29,13 @@ def build_system_prompt(strategy: str) -> str:
     return base
 
 
-def compose_messages(user_text: str, retrieved: List[Dict] | None) -> List[Dict[str, str]]:
+def compose_messages(user_text: str, retrieved: Optional[Dict]) -> List[Dict[str, str]]:
     strategy = choose_strategy(user_text)
     system = build_system_prompt(strategy)
-    context = ""
-    if retrieved:
-        top = "\n\n".join(f"[ctx] {r.get('text','')[:500]}" for r in retrieved[:4])
-        context = f"\n\nКонтекст из твоих материалов:\n{top}"
-    prompt = f"{user_text}{context}"
+    context_prompt = ""
+    if retrieved and retrieved.get("context_prompt"):
+        context_prompt = f"\n\n{retrieved['context_prompt']}"
+    prompt = f"{user_text}{context_prompt}"
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": prompt},

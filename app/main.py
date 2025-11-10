@@ -12,6 +12,7 @@ from app.db.session import engine
 from app.db.session import SessionLocal
 from app.services.memory import update_session_summary
 from app.services.preferences import extract_preferences
+from app.services.index_maintenance import schedule_monthly_rebuild
 from app.db import models
 
 
@@ -35,6 +36,7 @@ def create_app() -> FastAPI:
         Base.metadata.create_all(bind=engine)
         # Ночной cron (по желанию) — ежедневно в 03:30
         scheduler = BackgroundScheduler()
+        schedule_monthly_rebuild(scheduler)
 
         def consolidate_job():
             db = SessionLocal()

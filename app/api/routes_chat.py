@@ -7,6 +7,7 @@ from app.schemas.chat import (
     ChatGenerateRequest,
     ChatGenerateResponse,
     ChatMessage,
+    RetrievalOptions,
 )
 from app.services.llm_gateway import stream_reply_stub, chat_completion, tokenize_for_stream
 from app.services.rag import retrieve_for_text
@@ -32,17 +33,15 @@ def chat_generate(payload: ChatGenerateRequest, db: Session = Depends(get_db)) -
         (m for m in reversed(payload.messages) if m.role == "user"), None
     )
     reply_text = None
+    retrieval_bundle = None
     if last_user:
         # RAG
-        retrieved = []
         if payload.retrieval and payload.retrieval.top_k > 0:
-            # best-effort, игнорируем ошибки
             try:
-                retrieved = anyio.run(retrieve_for_text, last_user.content, payload.retrieval.top_k)
+                retrieval_bundle = anyio.run(retrieve_for_text, last_user.content, payload.retrieval)
             except Exception:
-                retrieved = []
-        # Compose and call LLM
-        full_msgs = compose_messages(last_user.content, retrieved)
+                retrieval_bundle = None
+        full_msgs = compose_messages(last_user.content, retrieval_bundle)
         llm_resp = anyio.run(chat_completion, full_msgs, True)
         reply_text = llm_resp or f"Принято: {last_user.content[:500]}"
 
@@ -109,6 +108,7 @@ def chat_generate(payload: ChatGenerateRequest, db: Session = Depends(get_db)) -
         message=ChatMessage(role="assistant", content=reply_text),
         usage={"stub": True},
         memories_written=[],
+        retrieval=retrieval_bundle,
     )
 
 
@@ -119,9 +119,9 @@ async def chat_ws(ws: WebSocket):
         data = await ws.receive_text()
         # Попробуем RAG + LLM, с безопасным фолбэком на заглушку
         try:
-            retrieved = await retrieve_for_text(data, top_k=6)
+            retrieved = await retrieve_for_text(data, RetrievalOptions(top_k=6))
         except Exception:
-            retrieved = []
+            retrieved = None
 
         # Добавим краткий контекст памяти
         try:
@@ -133,8 +133,12 @@ async def chat_ws(ws: WebSocket):
                 mem_texts = get_brief_memory_context(db)
             finally:
                 db.close()
-            for t in mem_texts:
-                retrieved.append({"text": t})
+            if retrieved:
+                extra = "\n".join(mem_texts)
+                prompt = retrieved.get("context_prompt", "")
+                retrieved["context_prompt"] = f"{prompt}\n\nПамять беседы:\n{extra}" if prompt else f"Память беседы:\n{extra}"
+            else:
+                retrieved = {"context_prompt": "Память беседы:\n" + "\n".join(mem_texts), "hits": []}
         except Exception:
             pass
 

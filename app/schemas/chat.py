@@ -13,6 +13,8 @@ class ChatMessage(BaseModel):
 class RetrievalOptions(BaseModel):
     top_k: int = 6
     filters: Optional[dict] = None
+    strategy: Optional[str] = "hybrid"
+    max_iterations: Optional[int] = None
 
 
 class ChatGenerateRequest(BaseModel):
@@ -26,5 +28,6 @@ class ChatGenerateResponse(BaseModel):
     message: ChatMessage
     usage: Optional[dict] = None
     memories_written: List[str] = []
+    retrieval: Optional[dict] = None
 
 

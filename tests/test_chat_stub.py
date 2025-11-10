@@ -16,4 +16,5 @@ def test_chat_generate_stub():
     data = r.json()
     assert data["message"]["role"] == "assistant"
     assert "Принято" in data["message"]["content"]
+    assert "retrieval" in data
 
