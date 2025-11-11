@@ -87,9 +87,11 @@ curl -s -X POST http://localhost:8000/api/chat/generate \
   }'
 ```
 
-- Загрузка zip с данными (любой набор папок/файлов внутри):
+- Загрузка ZIP с данными (обязательно задайте slug набора):
 ```
 curl -s -X POST http://localhost:8000/api/files/upload \
+  -F dataset=my-notes \
+  -F title="Личные заметки" \
   -F zip_file=@/полный/путь/к/архиву.zip
 ```
 Ответ содержит `job_id`. Статус обработки:
@@ -97,6 +99,9 @@ curl -s -X POST http://localhost:8000/api/files/upload \
 curl -s "http://localhost:8000/api/ingest/<job_id>?dataset=<slug>"
 ```
 Ответ `status=done` дополнен сводкой (`documents`, `chunks`, `indexed`). Индексация идёт в локальные индексы Faiss/BM25.
+- Управление наборами (REST): список `GET /api/datasets`, документы внутри набора `GET /api/datasets/<slug>/documents`, пересборка `POST /api/datasets/rebuild`.
+
+- Веб-интерфейс базы знаний: вкладка «База знаний» на странице чата показывает форму загрузки, статус обработки, перечень наборов и документов.
 
 - WebSocket стриминг чата (стаб):
 Установите любой WS‑клиент (например, [`websocat`](https://github.com/vi/websocat) или `wscat`). Пример с websocat:
@@ -172,21 +177,27 @@ websocat ws://localhost:8000/ws/chat
    - На iPhone в Safari введите `http://<ваш_IP_компьютера>:8000/chat`. Пример: `http://192.168.1.42:8000/chat`.
    - Если страница не открывается, убедитесь, что компьютер не блокирует входящие соединения (firewall, VPN и т.д.).
 
-7. **Загрузите личные материалы**
-   - Подготовьте ZIP с заметками/доками и отправьте его на endpoint. Пример для PowerShell:
+ 7. **Загрузите личные материалы**
+   - На вкладке «База знаний» есть форма: задайте `Slug набора` (например, `chat-history`), при желании заголовок и описание, прикрепите ZIP и нажмите «Загрузить архив». В панели ниже отображается статус и список наборов.
+   - Через PowerShell можно делать тоже самое:
      ```powershell
      Invoke-WebRequest -Uri "http://<IP>:8000/api/files/upload" `
        -Method Post `
-       -Form @{ zip_file = Get-Item "C:\путь\к\архиву.zip" }
+       -Form @{
+         dataset = "chat-history"
+         title = "Диалоги с агентами"
+         zip_file = Get-Item "C:\путь\к\архиву.zip"
+       }
      ```
-     или через `curl.exe`:
+     или `curl.exe`:
      ```
      curl.exe -X POST http://<IP>:8000/api/files/upload ^
+       -F dataset=chat-history ^
+       -F title="Диалоги" ^
        -F "zip_file=@C:\путь\к\архиву.zip"
      ```
-   - В ответе будет `job_id`. Индексация идёт в фоне (секунды/минуты).
-   - Проверка статуса: `http://<IP>:8000/api/ingest/<job_id>?dataset=<slug>` → ожидаем `status=done` и поля `documents/chunks/indexed`.
-   - Список наборов и документов: `GET /api/datasets`, `GET /api/datasets/<slug>/documents`. Перестроить индексы вручную: `POST /api/datasets/rebuild`.
+   - В ответе будет `job_id`. Индексация идёт в фоне (секунды/минуты). Статус: `http://<IP>:8000/api/ingest/<job_id>?dataset=<slug>`.
+   - Список наборов/документов: `GET /api/datasets`, `GET /api/datasets/<slug>/documents`. Пересборка индексов: `POST /api/datasets/rebuild`.
 
 8. **Начните диалог**
    - В разделе чата пишите вопросы. Ассистент:
