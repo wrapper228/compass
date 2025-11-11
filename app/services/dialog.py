@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import List, Dict, Tuple
 
 from app.core.config import get_settings
+from app.services.retrieval.context import build_context_snippet
 
 
 def choose_strategy(user_text: str) -> str:
@@ -34,8 +35,9 @@ def compose_messages(user_text: str, retrieved: List[Dict] | None) -> List[Dict[
     system = build_system_prompt(strategy)
     context = ""
     if retrieved:
-        top = "\n\n".join(f"[ctx] {r.get('text','')[:500]}" for r in retrieved[:4])
-        context = f"\n\nКонтекст из твоих материалов:\n{top}"
+        snippet = build_context_snippet(retrieved)
+        if snippet:
+            context = f"\n\n{snippet}"
     prompt = f"{user_text}{context}"
     return [
         {"role": "system", "content": system},

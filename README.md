@@ -2,7 +2,7 @@
 
 MVP сервис на FastAPI для рефлексивного ассистента.
 
-Важно: сейчас чат отвечает «заглушкой» (без реальной LLM). Индексация документов и поиск по ним включаются автоматически, если задать ключи Embeddings и Qdrant (см. ниже). Это достаточно, чтобы проверить загрузку данных, пайплайны и стриминг.
+Важно: сейчас чат отвечает «заглушкой» (без реальной LLM). Retrieval полностью локальный: чанки индексируются в Faiss + BM25, rerank выполняет кросс-энкодер. Для работы HyDE/переформулирования и финального ответа по-прежнему нужен совместимый Chat Completions API (см. ниже).
 
 ## Что понадобится
 - Установленный Python 3.11+
@@ -10,14 +10,12 @@ MVP сервис на FastAPI для рефлексивного ассистен
 - Терминал (Windows: PowerShell или Git Bash)
 
 ## Где брать и куда платить (ключи)
-- Embeddings (обязательно для индексации и поиска):
-  - Вариант A: [OpenRouter](https://openrouter.ai) — зарегистрируйтесь, пополните баланс/привяжите карту, создайте API‑ключ.
-  - Вариант B: [OpenAI](https://platform.openai.com) — включите оплату (billing), создайте API‑ключ.
-  - Пример модели: `text-embedding-3-small` (OpenAI) или аналог у провайдера в формате OpenAI API.
-- Qdrant (векторная БД, опционально):
-  - [Qdrant Cloud](https://cloud.qdrant.io) — создайте серверless‑кластер (часто есть бесплатный тариф), получите URL и API‑ключ.
+- LLM (опционально, но нужен для HyDE/переформулирования и финального ответа):
+  - Совместимый Chat Completions API — OpenRouter, OpenAI и т.п. (ключ должен содержать только ASCII-символы, без «кавычек» и других спецсимволов).
+  - Нужен API‑ключ и хотя бы одна модель (`LLM_MODEL_FAST`/`LLM_MODEL_SMART`).
+- Индексация и поиск работают локально и не требуют внешних сервисов — модели `BAAI/bge-small-en-v1.5` и `BAAI/bge-reranker-large` скачиваются автоматически с Hugging Face (интернет всё равно нужен при первом запуске).
 
-Оплата идёт провайдерам (OpenRouter/OpenAI и Qdrant). Без ключей всё запустится, но индексации/поиска не будет.
+Без LLM ключей сервис запустится, ingestion и поиск будут работать, но ответы останутся заглушкой.
 
 ## Запуск — пошагово (Windows/macOS/Linux)
 1) Клонируйте репозиторий и зайдите в папку
@@ -50,15 +48,11 @@ pip install -r requirements.txt
 # БД (по умолчанию — SQLite файл в ./data)
 DATABASE_URL=sqlite:///./data/compass.db
 
-# Embeddings в стиле OpenAI API (для индексации и поиска)
-EMBEDDINGS_API_BASE=https://api.openai.com/v1
-EMBEDDINGS_API_KEY=sk-...ваш_ключ...
-EMBEDDINGS_MODEL=text-embedding-3-small
-
-# Qdrant Cloud (опционально)
-QDRANT_URL=https://...your-qdrant-url...
-QDRANT_API_KEY=...ваш_ключ...
-QDRANT_COLLECTION=chunks
+# Retrieval (локальные индексы)
+RETRIEVAL_ENABLED=true
+INDICES_PATH=./data/indices
+DENSE_MODEL_NAME=BAAI/bge-small-en-v1.5
+RERANK_MODEL_NAME=BAAI/bge-reranker-large
 
 # LLM (OpenAI/OpenRouter совместимый Chat Completions)
 LLM_API_BASE=https://api.openai.com/v1
@@ -93,16 +87,21 @@ curl -s -X POST http://localhost:8000/api/chat/generate \
   }'
 ```
 
-- Загрузка zip с данными (любой набор папок/файлов внутри):
+- Загрузка ZIP с данными (обязательно задайте slug набора):
 ```
 curl -s -X POST http://localhost:8000/api/files/upload \
+  -F dataset=my-notes \
+  -F title="Личные заметки" \
   -F zip_file=@/полный/путь/к/архиву.zip
 ```
 Ответ содержит `job_id`. Статус обработки:
 ```
-curl -s http://localhost:8000/api/ingest/<job_id>
+curl -s "http://localhost:8000/api/ingest/<job_id>?dataset=<slug>"
 ```
-Если настроены Embeddings и Qdrant — автоматически произойдёт индексация.
+Ответ `status=done` дополнен сводкой (`documents`, `chunks`, `indexed`). Индексация идёт в локальные индексы Faiss/BM25.
+- Управление наборами (REST): список `GET /api/datasets`, документы внутри набора `GET /api/datasets/<slug>/documents`, пересборка `POST /api/datasets/rebuild`.
+
+- Веб-интерфейс базы знаний: вкладка «База знаний» на странице чата показывает форму загрузки, статус обработки, перечень наборов и документов.
 
 - WebSocket стриминг чата (стаб):
 Установите любой WS‑клиент (например, [`websocat`](https://github.com/vi/websocat) или `wscat`). Пример с websocat:
@@ -114,13 +113,115 @@ websocat ws://localhost:8000/ws/chat
 
 ## Где данные
 - База данных по умолчанию: `./data/compass.db` (SQLite)
-- Загрузки: `./data/uploads/`
-- Временные файлы ingestion/чанки: `./data/tmp/` (в т.ч. `chunks.json` для каждой задачи)
+- Локальные индексы (Faiss/BM25, метаданные): `./data/indices/`
+- Загрузки исходных архивов: `./data/uploads/`
+- Временные файлы ingestion: `./data/tmp/<job_id>/` (в т.ч. `ingest_result.json` с итогами)
+
+## Управление индексами
+- Полный пересчёт (например, раз в месяц или после правок в моделях):
+  ```
+  python3 -c "from app.services.retrieval.index_manager import HybridIndexManager; HybridIndexManager().rebuild()"
+  ```
+- Очистить индекс можно, удалив каталог `INDICES_PATH` — новые загрузки создадут его автоматически.
+
+## Пошаговый сценарий «с нуля до ассистента на iPhone»
+
+1. **Подготовка ноутбука/ПК**
+   - Нужен компьютер (Windows/macOS/Linux) с Python 3.11+, общий Wi‑Fi c iPhone.
+   - Установите Git и скачайте исходники:  
+     ```
+     git clone <URL_РЕПО>
+     cd compass
+     ```
+   - Создайте виртуальное окружение и поставьте зависимости:  
+     ```
+     python3 -m venv .venv
+     source .venv/bin/activate            # Windows: .venv\Scripts\activate
+     python3 -m pip install -r requirements.txt
+     ```
+
+2. **Получите ключ для LLM (чтобы ответы были не заглушкой)**
+   - Зарегистрируйтесь в сервисе с совместимым Chat Completions API (OpenAI, OpenRouter и пр.).
+   - Создайте API‑ключ, убедитесь, что на счёте есть деньги или бесплатный лимит.
+
+3. **Настройте окружение**
+   - Скопируйте `.env.example` (если есть) или создайте собственный `.env` рядом с `README.md`:
+     ```
+     DATABASE_URL=sqlite:///./data/compass.db
+     RETRIEVAL_ENABLED=true
+     INDICES_PATH=./data/indices
+     DENSE_MODEL_NAME=BAAI/bge-small-en-v1.5
+     RERANK_MODEL_NAME=BAAI/bge-reranker-large
+     LLM_API_BASE=https://api.openai.com/v1          # или ваш провайдер
+     LLM_API_KEY=sk-...                              # ваш ключ
+     LLM_MODEL_FAST=gpt-4o-mini                      # любая подходящая модель
+     LLM_MODEL_SMART=gpt-4o                          # опционально
+     ```
+   - Эти переменные скажут приложению, где хранить данные и какую LLM вызывать.
+
+4. **Запустите сервер**
+   - Находясь в активированном окружении, стартуйте Uvicorn:
+     ```
+     uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+     ```
+   - Оставьте терминал открытым: сервер должен работать постоянно.
+
+5. **Убедитесь, что iPhone видит сервер**
+   - Компьютер и телефон должны быть в одной сети Wi‑Fi.
+   - Узнайте локальный IP ноутбука:  
+     - macOS/Linux: `ipconfig getifaddr en0` или `hostname -I`  
+     - Windows: `ipconfig` → строка `IPv4-адрес`.
+   - Проверьте здоровье сервера в браузере ноутбука: `http://localhost:8000/api/health` → ожидаем `{ "ok": true }`.
+
+6. **Откройте приложение на iPhone**
+   - На iPhone в Safari введите `http://<ваш_IP_компьютера>:8000/chat`. Пример: `http://192.168.1.42:8000/chat`.
+   - Если страница не открывается, убедитесь, что компьютер не блокирует входящие соединения (firewall, VPN и т.д.).
+
+ 7. **Загрузите личные материалы**
+   - На вкладке «База знаний» есть форма: задайте `Slug набора` (например, `chat-history`), при желании заголовок и описание, прикрепите ZIP и нажмите «Загрузить архив». В панели ниже отображается статус и список наборов.
+   - Через PowerShell можно делать тоже самое:
+     ```powershell
+     Invoke-WebRequest -Uri "http://<IP>:8000/api/files/upload" `
+       -Method Post `
+       -Form @{
+         dataset = "chat-history"
+         title = "Диалоги с агентами"
+         zip_file = Get-Item "C:\путь\к\архиву.zip"
+       }
+     ```
+     или `curl.exe`:
+     ```
+     curl.exe -X POST http://<IP>:8000/api/files/upload ^
+       -F dataset=chat-history ^
+       -F title="Диалоги" ^
+       -F "zip_file=@C:\путь\к\архиву.zip"
+     ```
+   - В ответе будет `job_id`. Индексация идёт в фоне (секунды/минуты). Статус: `http://<IP>:8000/api/ingest/<job_id>?dataset=<slug>`.
+   - Список наборов/документов: `GET /api/datasets`, `GET /api/datasets/<slug>/documents`. Пересборка индексов: `POST /api/datasets/rebuild`.
+
+8. **Начните диалог**
+   - В разделе чата пишите вопросы. Ассистент:
+     - анализирует ваш вопрос и контекст беседы,
+     - ищет релевантные фрагменты в загруженных материалах,
+     - формирует резюме кластеров + приводит цитаты с путями/строками,
+     - обращается к LLM (через ваш API‑ключ) и выдаёт ответ, опираясь на поиск и память.
+   - История беседы сохраняется в SQLite (`./data/compass.db`), поэтому контекст личного взаимодействия накапливается.
+
+9. **Работа и поддержка**
+   - Загружайте новые архивы — индекс обновится автоматически.
+   - Если хотите «чистый лист», удалите `./data/indices` и `./data/tmp/*`, либо запустите пересборку:  
+     ```
+     python3 -c "from app.services.retrieval.index_manager import HybridIndexManager; HybridIndexManager().rebuild()"
+     ```
+   - Для выхода остановите Uvicorn (`Ctrl+C`) и деактивируйте окружение (`deactivate`).
+
+Следуя этим шагам, вы запускаете локальный сервер, доступный с iPhone, и получаете ассистента, который использует ваше диалоговое окно, личную базу знаний и интеллектуальный движок LLM.
 
 ## Тесты
 ```
-pytest -q
+python3 -m pytest -q
 ```
+Если `pytest` не установлен, выполните `pip install pytest`.
 
 ## Docker (опционально)
 Собрать и запустить локально:
@@ -149,6 +250,6 @@ docker run --rm -p 8000:8000 --env-file .env compass
 4. Добавьте переменные окружения из `.env`
 
 ## Что готово сейчас и чего ждать дальше
-- Готово: каркас FastAPI, REST/WS чат (стабы), загрузка zip, фоновая распаковка/чанкинг, опциональная индексация в Qdrant, БД для сессий/сообщений.
-- В планах: подключение реальной LLM по API, RAG‑контекст в ответ, многоуровневая память и проактивность.
+- Готово: каркас FastAPI, REST/WS чат (стабы), гибридный Retrieval (Faiss + BM25 + кросс-энкодер) с HyDE/self-check, загрузка zip, фоновая распаковка/чанкинг, локальная БД для сессий/сообщений.
+- В планах: подключение реальной LLM по API, расширение памяти и проактивности.
 

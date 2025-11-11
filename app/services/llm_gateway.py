@@ -1,8 +1,11 @@
 from typing import AsyncGenerator, Iterable, List, Dict, Optional
 
 import httpx
+import logging
 
 from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 async def stream_reply_stub(text: str) -> AsyncGenerator[str, None]:
@@ -30,7 +33,13 @@ async def chat_completion(messages: List[Dict[str, str]], is_complex: bool = Fal
     if not model:
         return None
     url = f"{s.llm_api_base.rstrip('/')}/chat/completions"
-    headers = {"Authorization": f"Bearer {s.llm_api_key}"}
+    auth_value = f"Bearer {s.llm_api_key}"
+    try:
+        auth_value.encode("ascii")
+    except UnicodeEncodeError:
+        logger.error("LLM_API_KEY содержит не-ASCII символы. Уберите кавычки и спецсимволы из ключа.")
+        return None
+    headers = {"Authorization": auth_value}
     payload = {
         "model": model,
         "stream": False,
