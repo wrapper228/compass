@@ -55,6 +55,18 @@ class HybridIndexManager:
         self._load_state()
 
     # ------------------------------------------------------------------ public API
+    def refresh(self) -> None:
+        """Reloads metadata and corpus state from disk (used after external updates)."""
+        self._logger.info("indices.refresh")
+        self._metadata = {}
+        self._bm25_tokens = {}
+        self._bm25_model = None
+        self._bm25_ids = []
+        self._bm25_corpus = []
+        self._dense_index = None
+        self._dense_dim = None
+        self._load_state()
+
     def index_chunks(
         self,
         chunks: Iterable[ChunkIndexInput],

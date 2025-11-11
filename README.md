@@ -173,9 +173,19 @@ websocat ws://localhost:8000/ws/chat
    - Если страница не открывается, убедитесь, что компьютер не блокирует входящие соединения (firewall, VPN и т.д.).
 
 7. **Загрузите личные материалы**
-   - На странице есть форма загрузки ZIP. Подготовьте архив с текстами, заметками, документами.
-   - После загрузки появится `job_id`. Индексация идёт в фоне (занимает от секунд до минут).
-   - Статус: `http://<IP>:8000/api/ingest/<job_id>` → вернёт `status=done` и числа `documents/chunks/indexed`.
+   - Подготовьте ZIP с заметками/доками и отправьте его на endpoint. Пример для PowerShell:
+     ```powershell
+     Invoke-WebRequest -Uri "http://<IP>:8000/api/files/upload" `
+       -Method Post `
+       -Form @{ zip_file = Get-Item "C:\путь\к\архиву.zip" }
+     ```
+     или через `curl.exe`:
+     ```
+     curl.exe -X POST http://<IP>:8000/api/files/upload ^
+       -F "zip_file=@C:\путь\к\архиву.zip"
+     ```
+   - В ответе будет `job_id`. Индексация идёт в фоне (секунды/минуты).
+   - Проверка статуса: `http://<IP>:8000/api/ingest/<job_id>` → ожидаем `status=done` и поля `documents/chunks/indexed`.
 
 8. **Начните диалог**
    - В разделе чата пишите вопросы. Ассистент:

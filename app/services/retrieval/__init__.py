@@ -13,3 +13,10 @@ async def retrieve(query: str, top_k: int = 6) -> List[dict]:
 def get_pipeline_instance() -> HybridRetrievalPipeline:
     return get_pipeline()
 
+
+def refresh_indices() -> None:
+    """Reload cached index state inside the shared pipeline (used after ingestion)."""
+    pipeline = get_pipeline()
+    pipeline.indices.refresh()
+
+

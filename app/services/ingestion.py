@@ -21,6 +21,7 @@ from app.db import models
 from app.db.session import SessionLocal
 from app.services.retrieval.chunker import Chunk, chunk_document, deduplicate_chunks
 from app.services.retrieval.index_manager import ChunkIndexInput, HybridIndexManager
+from app.services.retrieval import refresh_indices
 
 logger = structlog.get_logger(__name__)
 
@@ -144,6 +145,10 @@ def process_zip(job_id: str, zip_bytes: bytes, workspace: Path) -> dict:
     payload = json.dumps(result, ensure_ascii=False, indent=2)
     result_path.write_text(payload, encoding="utf-8")
     legacy_marker.write_text(payload, encoding="utf-8")
+    try:
+        refresh_indices()
+    except Exception:
+        logger.exception("ingest.refresh_failed", job_id=job_id)
     return result
 
 
