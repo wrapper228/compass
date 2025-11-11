@@ -94,7 +94,7 @@ curl -s -X POST http://localhost:8000/api/files/upload \
 ```
 Ответ содержит `job_id`. Статус обработки:
 ```
-curl -s http://localhost:8000/api/ingest/<job_id>
+curl -s "http://localhost:8000/api/ingest/<job_id>?dataset=<slug>"
 ```
 Ответ `status=done` дополнен сводкой (`documents`, `chunks`, `indexed`). Индексация идёт в локальные индексы Faiss/BM25.
 
@@ -185,7 +185,8 @@ websocat ws://localhost:8000/ws/chat
        -F "zip_file=@C:\путь\к\архиву.zip"
      ```
    - В ответе будет `job_id`. Индексация идёт в фоне (секунды/минуты).
-   - Проверка статуса: `http://<IP>:8000/api/ingest/<job_id>` → ожидаем `status=done` и поля `documents/chunks/indexed`.
+   - Проверка статуса: `http://<IP>:8000/api/ingest/<job_id>?dataset=<slug>` → ожидаем `status=done` и поля `documents/chunks/indexed`.
+   - Список наборов и документов: `GET /api/datasets`, `GET /api/datasets/<slug>/documents`. Перестроить индексы вручную: `POST /api/datasets/rebuild`.
 
 8. **Начните диалог**
    - В разделе чата пишите вопросы. Ассистент:

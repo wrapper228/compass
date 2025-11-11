@@ -112,13 +112,21 @@ def _summarize_text(text: str) -> str:
 
 
 def _format_citation(item: dict) -> str:
+    meta = item.get("meta") or {}
+    dataset = item.get("dataset") or meta.get("dataset") or ""
     path = item.get("path", "unknown")
-    start = item.get("start_line", 0)
-    end = item.get("end_line", 0)
+    start = item.get("start_line")
+    end = item.get("end_line")
+    range_part = ""
+    if isinstance(start, int) and isinstance(end, int) and (start or end):
+        range_part = f":{start}-{end}"
+    elif isinstance(start, int) and start:
+        range_part = f":{start}"
+    location = f"{dataset}/{path}" if dataset else path
     snippet = item.get("text", "").strip().replace("\n", " ")
     if len(snippet) > 260:
         snippet = snippet[:260].rstrip() + "…"
-    return f"[{path}:{start}-{end}] {snippet}"
+    return f"[{location}{range_part}] {snippet}"
 
 
 def _render_block(cluster: ClusterBlock, citations_count: int) -> str:

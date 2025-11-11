@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import String, Text, Integer, ForeignKey, DateTime
+from sqlalchemy import String, Text, Integer, ForeignKey, DateTime, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -45,19 +45,50 @@ class Memory(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class KnowledgeDataset(Base):
+    __tablename__ = "knowledge_datasets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    slug: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    total_documents: Mapped[int] = mapped_column(Integer, default=0)
+    total_chunks: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_ingested_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    documents: Mapped[list["KnowledgeDocument"]] = relationship(
+        back_populates="dataset", cascade="all, delete-orphan", order_by="KnowledgeDocument.id"
+    )
+
+
 class KnowledgeDocument(Base):
     __tablename__ = "knowledge_documents"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    job_id: Mapped[str] = mapped_column(String(64), index=True)
-    path: Mapped[str] = mapped_column(String(512))
+    dataset_id: Mapped[int] = mapped_column(ForeignKey("knowledge_datasets.id", ondelete="CASCADE"), index=True)
+    path: Mapped[str] = mapped_column(String(512), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    folder: Mapped[str] = mapped_column(String(255))
     sha256: Mapped[str] = mapped_column(String(64), index=True)
     file_size: Mapped[int] = mapped_column(Integer)
+    token_count: Mapped[int] = mapped_column(Integer, default=0)
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    dataset: Mapped[KnowledgeDataset] = relationship(back_populates="documents")
     chunks: Mapped[list["KnowledgeChunk"]] = relationship(
         back_populates="document", cascade="all, delete-orphan", order_by="KnowledgeChunk.ordinal"
+    )
+    summary: Mapped[Optional["KnowledgeDocumentSummary"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan", uselist=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("dataset_id", "path", name="uq_document_dataset_path"),
     )
 
 
@@ -77,6 +108,21 @@ class KnowledgeChunk(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     document: Mapped[KnowledgeDocument] = relationship(back_populates="chunks")
+
+
+class KnowledgeDocumentSummary(Base):
+    __tablename__ = "knowledge_document_summaries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    summary_text: Mapped[str] = mapped_column(Text)
+    tail_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    document: Mapped[KnowledgeDocument] = relationship(back_populates="summary")
 
 
 class IndexVersion(Base):

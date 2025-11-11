@@ -28,6 +28,8 @@ class ChunkIndexInput:
     document_sha: str
     start_line: int
     end_line: int
+    dataset_slug: str
+    folder: str
 
 
 class HybridIndexManager:
@@ -105,6 +107,8 @@ class HybridIndexManager:
                 "sha": chunk.document_sha,
                 "start_line": chunk.start_line,
                 "end_line": chunk.end_line,
+                "dataset": chunk.dataset_slug,
+                "folder": chunk.folder,
             }
             self._bm25_tokens[chunk.chunk_id] = self._tokenize(chunk.text)
 
@@ -163,8 +167,11 @@ class HybridIndexManager:
                     models.KnowledgeChunk.end_line,
                     models.KnowledgeDocument.path,
                     models.KnowledgeDocument.sha256,
+                    models.KnowledgeDocument.folder,
+                    models.KnowledgeDataset.slug,
                 )
                 .join(models.KnowledgeDocument, models.KnowledgeChunk.document_id == models.KnowledgeDocument.id)
+                .join(models.KnowledgeDataset, models.KnowledgeDocument.dataset_id == models.KnowledgeDataset.id)
                 .all()
             )
         finally:
@@ -178,6 +185,8 @@ class HybridIndexManager:
                 end_line=row.end_line,
                 document_path=row.path,
                 document_sha=row.sha256,
+                dataset_slug=row.slug,
+                folder=row.folder or "",
             )
             for row in rows
         ]
@@ -244,8 +253,12 @@ class HybridIndexManager:
                     models.KnowledgeChunk.end_line,
                     models.KnowledgeDocument.path,
                     models.KnowledgeDocument.sha256,
+                    models.KnowledgeDocument.folder,
+                    models.KnowledgeDocument.name,
+                    models.KnowledgeDataset.slug,
                 )
                 .join(models.KnowledgeDocument, models.KnowledgeChunk.document_id == models.KnowledgeDocument.id)
+                .join(models.KnowledgeDataset, models.KnowledgeDocument.dataset_id == models.KnowledgeDataset.id)
                 .filter(models.KnowledgeChunk.id.in_(ids))
                 .all()
             )
@@ -260,6 +273,9 @@ class HybridIndexManager:
                 "start_line": row.start_line,
                 "end_line": row.end_line,
                 "ordinal": row.ordinal,
+                "folder": row.folder or "",
+                "dataset": row.slug,
+                "document_name": row.name,
             }
         return payloads
 
@@ -268,7 +284,17 @@ class HybridIndexManager:
         if self.metadata_path.exists():
             data = json.loads(self.metadata_path.read_text(encoding="utf-8"))
             chunks = data.get("chunks", {})
-            self._metadata = {int(k): v for k, v in chunks.items()}
+            prepared: Dict[int, dict] = {}
+            for key, meta in chunks.items():
+                prepared[int(key)] = {
+                    "path": meta.get("path", ""),
+                    "sha": meta.get("sha", ""),
+                    "start_line": meta.get("start_line", 0),
+                    "end_line": meta.get("end_line", 0),
+                    "dataset": meta.get("dataset", ""),
+                    "folder": meta.get("folder", ""),
+                }
+            self._metadata = prepared
             self._dense_dim = data.get("dense", {}).get("dim")
         if self.bm25_path.exists():
             data = json.loads(self.bm25_path.read_text(encoding="utf-8"))

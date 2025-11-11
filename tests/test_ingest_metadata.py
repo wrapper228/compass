@@ -25,21 +25,35 @@ def test_process_zip_persists_documents(tmp_path, monkeypatch):
     job_id = "job-meta-test"
     zip_bytes = _build_zip()
 
-    result = process_zip(job_id, zip_bytes, tmp_path)
+    result = process_zip(
+        job_id,
+        zip_bytes,
+        tmp_path,
+        dataset_slug="test-meta",
+        dataset_title="Meta dataset",
+    )
     assert result["documents"] == 1
     assert result["chunks"] >= 1
 
     session = SessionLocal()
     try:
-        doc = session.query(models.KnowledgeDocument).filter_by(job_id=job_id).one()
-        assert doc.path == "note.txt"
+        dataset = (
+            session.query(models.KnowledgeDataset)
+            .filter_by(slug="test-meta")
+            .one()
+        )
+        doc = (
+            session.query(models.KnowledgeDocument)
+            .filter_by(dataset_id=dataset.id, path="note.txt")
+            .one()
+        )
         assert doc.file_size > 0
         assert doc.chunks
         chunk = doc.chunks[0]
         assert chunk.start_line == 1
         assert chunk.end_line >= 2
     finally:
-        session.query(models.KnowledgeDocument).filter_by(job_id=job_id).delete()
+        session.query(models.KnowledgeDataset).filter_by(slug="test-meta").delete()
         session.commit()
         session.close()
 

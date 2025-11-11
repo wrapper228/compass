@@ -3,30 +3,88 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Compass Chat</title>
+    <title>Compass Assistant</title>
     <style>
       :root{color-scheme:light dark}
-      body{font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial, sans-serif; max-width: 840px; margin: 24px auto; padding: 0 12px}
+      body{font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial, sans-serif; max-width: 980px; margin: 24px auto; padding: 0 16px}
       h1{margin:0 0 16px}
-      #chat{border:1px solid #ddd; border-radius:10px; padding:12px; height:60vh; overflow:auto; background:#fafafa}
+      nav.tabs{display:flex; gap:12px; margin-bottom:16px; flex-wrap:wrap}
+      nav.tabs button{padding:10px 16px; border-radius:10px; border:1px solid #bbb; background:#f1f1f1; cursor:pointer}
+      nav.tabs button.active{background:#d9ebff; border-color:#7aa7ff}
+      section.tab{display:none}
+      section.tab.active{display:block}
+      #chat{border:1px solid #ddd; border-radius:10px; padding:12px; height:55vh; overflow:auto; background:#fafafa}
       .row{display:flex; gap:8px; margin-top:12px}
-      input[type=text]{flex:1; padding:10px 12px; border-radius:10px; border:1px solid #ccc}
-      button{padding:10px 14px; border-radius:10px; border:1px solid #ccc; cursor:pointer}
+      input[type=text], textarea{flex:1; padding:10px 12px; border-radius:10px; border:1px solid #ccc; font-family:inherit}
+      textarea{min-height:80px; resize:vertical}
+      button{padding:10px 14px; border-radius:10px; border:1px solid #ccc; cursor:pointer; background:#fff}
+      button.small{font-size:12px; padding:6px 10px}
       .bubble{max-width:80%; padding:10px 12px; border-radius:14px; margin:8px 0; white-space:pre-wrap}
       .user{background:#e8f0ff; margin-left:auto}
       .assistant{background:#e9ffe8; margin-right:auto}
-      .meta{color:#666; font-size:12px}
+      .meta{color:#666; font-size:12px; margin-top:8px}
+      .panel{border:1px solid #ddd; border-radius:12px; padding:16px; margin-bottom:16px; background:#fafafa}
+      .panel h2{margin-top:0}
+      .panel-header{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap}
+      form#upload-form{display:grid; gap:12px}
+      form#upload-form input[type=text], form#upload-form textarea{width:100%}
+      form#upload-form input[type=file]{border:1px solid #ccc; border-radius:10px; padding:8px; background:#fff}
+      #datasets .dataset{border:1px solid #ddd; border-radius:10px; padding:12px; margin-bottom:12px; background:#fff}
+      #datasets .dataset header{display:flex; flex-wrap:wrap; gap:8px; justify-content:space-between; align-items:center}
+      #datasets .dataset code{background:#f3f3f3; padding:2px 6px; border-radius:6px; font-size:12px}
+      .dataset-stats{font-size:12px; color:#555}
+      .documents{margin-top:12px; border-top:1px solid #eee; padding-top:12px; font-size:14px}
+      .documents ul{margin:0; padding-left:18px}
     </style>
   </head>
   <body>
-    <h1>Compass Chat</h1>
-    <div id="chat"></div>
-    <form id="send" class="row">
-      <input id="text" type="text" placeholder="Напишите сообщение..." autocomplete="off" />
-      <button type="submit">Отправить</button>
-    </form>
-    <div class="meta">Ответ стримится через WebSocket.</div>
+    <h1>Compass Assistant</h1>
+    <nav class="tabs">
+      <button data-tab="chat" class="active">Чат</button>
+      <button data-tab="knowledge">База знаний</button>
+    </nav>
+
+    <section id="tab-chat" class="tab active">
+      <div id="chat"></div>
+      <form id="send" class="row">
+        <input id="text" type="text" placeholder="Напишите сообщение..." autocomplete="off" />
+        <button type="submit">Отправить</button>
+      </form>
+      <div class="meta">Ответ стримится через WebSocket.</div>
+    </section>
+
+    <section id="tab-knowledge" class="tab">
+      <div class="panel">
+        <h2>Загрузить архив</h2>
+        <form id="upload-form">
+          <input type="text" name="dataset" id="dataset" placeholder="Slug набора, например: chat-history" required />
+          <input type="text" name="title" id="title" placeholder="Название (опционально)" />
+          <textarea name="description" id="description" placeholder="Описание (опционально)"></textarea>
+          <input type="file" name="zip_file" id="zip-file" accept=".zip" required />
+          <button type="submit">Загрузить архив</button>
+        </form>
+        <div id="upload-status" class="meta"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Наборы данных</h2>
+          <button id="rebuild-btn" type="button" class="small">Перестроить индексы</button>
+        </div>
+        <div id="datasets" class="meta">Загрузка...</div>
+      </div>
+    </section>
+
     <script>
+      const tabs = document.querySelectorAll('[data-tab]');
+      const sections = document.querySelectorAll('section.tab');
+      tabs.forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          tabs.forEach(b=>b.classList.toggle('active', b===btn));
+          sections.forEach(sec=>sec.classList.toggle('active', sec.id === 'tab-' + btn.dataset.tab));
+        });
+      });
+
       const chatEl = document.getElementById('chat');
       const formEl = document.getElementById('send');
       const inputEl = document.getElementById('text');
@@ -61,8 +119,170 @@
         };
         ws.onerror = ()=>{ assistant.textContent = '(ошибка соединения)'; };
       });
+
+      const uploadForm = document.getElementById('upload-form');
+      const uploadStatus = document.getElementById('upload-status');
+      const rebuildBtn = document.getElementById('rebuild-btn');
+      const datasetsEl = document.getElementById('datasets');
+
+      uploadForm.addEventListener('submit', async (event)=>{
+        event.preventDefault();
+        const formData = new FormData(uploadForm);
+        uploadStatus.textContent = 'Загружаем архив...';
+        uploadStatus.style.color = '';
+        try{
+          const resp = await fetch('/api/files/upload', {method:'POST', body:formData});
+          if(!resp.ok){
+            const err = await resp.json().catch(()=>({detail:'Не удалось загрузить архив'}));
+            throw new Error(err.detail || 'Не удалось загрузить архив');
+          }
+          const data = await resp.json();
+          uploadStatus.textContent = `Архив принят. job_id=${data.job_id}. Ждём индексацию...`;
+          pollIngest(data.job_id, formData.get('dataset'));
+          uploadForm.reset();
+        }catch(err){
+          uploadStatus.textContent = err.message;
+          uploadStatus.style.color = '#d00';
+        }
+      });
+
+      async function pollIngest(jobId, dataset){
+        try{
+          const params = dataset ? `?dataset=${encodeURIComponent(dataset)}` : '';
+          const resp = await fetch(`/api/ingest/${jobId}${params}`);
+          if(!resp.ok) throw new Error('status error');
+          const data = await resp.json();
+          if(data.status === 'done'){
+            uploadStatus.textContent = `Индексация завершена: ${data.documents} документов, ${data.chunks} чанков.`;
+            loadDatasets();
+            return;
+          }
+          uploadStatus.textContent = 'Идёт обработка...';
+        }catch{
+          uploadStatus.textContent = 'Не удалось проверить статус загрузки';
+          uploadStatus.style.color = '#d00';
+          return;
+        }
+        setTimeout(()=> pollIngest(jobId, dataset), 2000);
+      }
+
+      rebuildBtn.addEventListener('click', async ()=>{
+        rebuildBtn.disabled = true;
+        rebuildBtn.textContent = 'Перестраиваем...';
+        try{
+          const resp = await fetch('/api/datasets/rebuild', {method:'POST'});
+          if(!resp.ok) throw new Error('rebuild failed');
+          uploadStatus.textContent = 'Индексы перестроены.';
+          uploadStatus.style.color = '';
+          loadDatasets();
+        }catch{
+          uploadStatus.textContent = 'Не удалось перестроить индексы.';
+          uploadStatus.style.color = '#d00';
+        }finally{
+          rebuildBtn.disabled = false;
+          rebuildBtn.textContent = 'Перестроить индексы';
+        }
+      });
+
+      async function loadDatasets(){
+        datasetsEl.textContent = 'Загрузка...';
+        try{
+          const resp = await fetch('/api/datasets');
+          if(!resp.ok) throw new Error();
+          const items = await resp.json();
+          renderDatasets(items);
+        }catch{
+          datasetsEl.textContent = 'Не удалось получить список наборов.';
+        }
+      }
+
+      function renderDatasets(items){
+        if(!items || !items.length){
+          datasetsEl.textContent = 'Загрузите ZIP с материалами, чтобы построить базу знаний.';
+          return;
+        }
+        datasetsEl.innerHTML = '';
+        items.forEach(item=>{
+          const card = document.createElement('div');
+          card.className = 'dataset';
+          const header = document.createElement('header');
+          header.innerHTML = `
+            <div>
+              <strong>${item.title || item.slug}</strong>
+              <code>${item.slug}</code>
+            </div>
+            <div class="dataset-stats">
+              файлов: ${item.documents}, чанков: ${item.chunks}, токенов: ${item.tokens}
+            </div>`;
+          card.appendChild(header);
+          if(item.description){
+            const desc = document.createElement('div');
+            desc.className = 'meta';
+            desc.textContent = item.description;
+            card.appendChild(desc);
+          }
+          if(item.last_ingested_at){
+            const meta = document.createElement('div');
+            meta.className = 'meta';
+            meta.textContent = `Последняя загрузка: ${item.last_ingested_at}`;
+            card.appendChild(meta);
+          }
+          const actions = document.createElement('div');
+          actions.style.marginTop = '8px';
+          const btn = document.createElement('button');
+          btn.className = 'small';
+          btn.textContent = 'Показать документы';
+          btn.addEventListener('click', ()=> toggleDocuments(item.slug, card, btn));
+          actions.appendChild(btn);
+          card.appendChild(actions);
+          datasetsEl.appendChild(card);
+        });
+      }
+
+      async function toggleDocuments(slug, card, btn){
+        let container = card.querySelector('.documents');
+        if(container){
+          container.remove();
+          btn.textContent = 'Показать документы';
+          return;
+        }
+        container = document.createElement('div');
+        container.className = 'documents';
+        container.textContent = 'Загружаем документы...';
+        card.appendChild(container);
+        btn.textContent = 'Скрыть документы';
+        try{
+          const resp = await fetch(`/api/datasets/${encodeURIComponent(slug)}/documents`);
+          if(!resp.ok) throw new Error();
+          const docs = await resp.json();
+          if(!docs.length){
+            container.textContent = 'В наборе нет документов.';
+            return;
+          }
+          const list = document.createElement('ul');
+          docs.forEach(doc=>{
+            const li = document.createElement('li');
+            li.innerHTML = `<strong>${doc.name}</strong> <span class="meta">(${doc.folder || 'корень'})</span><br />
+              <code>${doc.path}</code><br />
+              <span class="meta">чанков: ${doc.chunk_count}, токенов: ${doc.token_count}</span>`;
+            if(doc.tail){
+              const tail = document.createElement('div');
+              tail.className = 'meta';
+              tail.textContent = `Финал: ${doc.tail.slice(0, 280)}${doc.tail.length > 280 ? '…' : ''}`;
+              li.appendChild(tail);
+            }
+            list.appendChild(li);
+          });
+          container.innerHTML = '';
+          container.appendChild(list);
+        }catch{
+          container.textContent = 'Не удалось загрузить список документов.';
+        }
+      }
+
+      loadDatasets();
     </script>
   </body>
-  </html>
+</html>
 
 
