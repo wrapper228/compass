@@ -138,7 +138,19 @@ class HybridRetrievalPipeline:
             meta_info.setdefault("search_query", best_meta.get("search_query"))
             if hyde_snippet:
                 meta_info.setdefault("hyde_snippet", hyde_snippet[:500])
-        return best_results[:top_k]
+        if best_results:
+            return best_results[:top_k]
+
+        dataset_overview = self._dataset_overview(intent)
+        if dataset_overview:
+            self._logger.info(
+                "retrieval.dataset_overview",
+                query=intent.original_query,
+                dataset=dataset_overview[0]["meta"].get("dataset") if dataset_overview else None,
+                results=len(dataset_overview),
+            )
+            return dataset_overview
+        return []
 
     async def _run_standard_once(
         self, intent: RetrievalIntent, top_k: int
@@ -283,6 +295,34 @@ class HybridRetrievalPipeline:
                 if len(results) >= max_items:
                     return results
         return results
+
+    def _dataset_overview(self, intent: RetrievalIntent) -> List[dict]:
+        dataset_slug = intent.dataset_filters[0] if intent.dataset_filters else self.repo.latest_dataset_slug()
+        documents = self.repo.recent_documents(dataset_slug, limit=5)
+        if not documents:
+            return []
+        overview: List[dict] = []
+        for doc in documents:
+            text = doc.summary_text or doc.tail_text or doc.last_chunk_text
+            if not text:
+                continue
+            overview.append(
+                {
+                    "chunk_id": -doc.id,
+                    "text": text,
+                    "path": doc.path,
+                    "dataset": doc.dataset_slug,
+                    "folder": doc.folder,
+                    "score": 0.8,
+                    "meta": {
+                        "mode": "dataset_overview",
+                        "dataset": doc.dataset_slug,
+                        "folder": doc.folder,
+                        "document": doc.name,
+                    },
+                }
+            )
+        return overview
 
     def _analyze_intent(self, query: str) -> RetrievalIntent:
         cleaned = query

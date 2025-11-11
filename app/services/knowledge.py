@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy import func
@@ -15,6 +16,7 @@ class DatasetInfo:
     title: str
     description: Optional[str]
     document_count: int
+    last_ingested_at: Optional[datetime]
 
 
 @dataclass
@@ -61,14 +63,16 @@ class KnowledgeRepository:
                     models.KnowledgeDataset.title,
                     models.KnowledgeDataset.description,
                     func.count(models.KnowledgeDocument.id),
+                    models.KnowledgeDataset.last_ingested_at,
                 )
                 .outerjoin(models.KnowledgeDocument, models.KnowledgeDocument.dataset_id == models.KnowledgeDataset.id)
                 .group_by(
                     models.KnowledgeDataset.slug,
                     models.KnowledgeDataset.title,
                     models.KnowledgeDataset.description,
+                    models.KnowledgeDataset.last_ingested_at,
                 )
-                .order_by(models.KnowledgeDataset.title)
+                .order_by(models.KnowledgeDataset.updated_at.desc())
                 .all()
             )
             folder_rows = (
@@ -91,6 +95,7 @@ class KnowledgeRepository:
                 title=row[1],
                 description=row[2],
                 document_count=row[3] or 0,
+                last_ingested_at=row[4],
             )
             for row in dataset_rows
         ]
@@ -176,4 +181,58 @@ class KnowledgeRepository:
             return details
         finally:
             session.close()
+
+    def recent_documents(self, dataset_slug: Optional[str], limit: int = 5) -> List[DocumentDetail]:
+        session = SessionLocal()
+        try:
+            query = (
+                session.query(
+                    models.KnowledgeDocument.id,
+                    models.KnowledgeDocument.path,
+                    models.KnowledgeDocument.name,
+                    models.KnowledgeDocument.folder,
+                    models.KnowledgeDataset.slug,
+                    models.KnowledgeDocumentSummary.summary_text,
+                    models.KnowledgeDocumentSummary.tail_text,
+                )
+                .join(models.KnowledgeDataset, models.KnowledgeDocument.dataset_id == models.KnowledgeDataset.id)
+                .outerjoin(
+                    models.KnowledgeDocumentSummary,
+                    models.KnowledgeDocumentSummary.document_id == models.KnowledgeDocument.id,
+                )
+                .order_by(models.KnowledgeDocument.updated_at.desc())
+            )
+            if dataset_slug:
+                query = query.filter(models.KnowledgeDataset.slug == dataset_slug)
+            documents = query.limit(limit).all()
+
+            details: List[DocumentDetail] = []
+            for doc in documents:
+                details.append(
+                    DocumentDetail(
+                        id=doc.id,
+                        path=doc.path,
+                        name=doc.name,
+                        folder=doc.folder,
+                        dataset_slug=doc.slug,
+                        summary_text=doc.summary_text or "",
+                        tail_text=doc.tail_text,
+                        last_chunk_text=None,
+                        last_start_line=None,
+                        last_end_line=None,
+                    )
+                )
+            return details
+        finally:
+            session.close()
+
+    def latest_dataset_slug(self) -> Optional[str]:
+        if not self._datasets:
+            return None
+        sorted_ds = sorted(
+            self._datasets,
+            key=lambda ds: ds.last_ingested_at or datetime.min,
+            reverse=True,
+        )
+        return sorted_ds[0].slug if sorted_ds else None
 
